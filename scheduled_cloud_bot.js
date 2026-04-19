@@ -9,7 +9,7 @@ const PDFDocument = require('pdfkit');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ENV_CHAT_ID = process.env.TELEGRAM_CHAT_ID ? Number(process.env.TELEGRAM_CHAT_ID) : null;
-const TARGET_CHAT_NAME = 'Telegram Manager'; // Aap isko apne chat/group ke exact naam me change kar sakte hain
+const TARGET_CHAT_NAME = '916376620435'; // Target Chat Id / Number
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -67,13 +67,13 @@ client.on('ready', async () => {
 
     setTimeout(async () => {
         try {
-            console.log(`🔎 Looking for target chat by exact name: "${TARGET_CHAT_NAME}"`);
+            console.log(`🔎 Looking for target chat by exact Name/ID: "${TARGET_CHAT_NAME}"`);
             
             const chats = await client.getChats();
-            const targetChat = chats.find(c => c.name === TARGET_CHAT_NAME || c.id._serialized === client.info.wid._serialized);
+            const targetChat = chats.find(c => c.name === TARGET_CHAT_NAME || c.id.user === TARGET_CHAT_NAME || c.id._serialized === `${TARGET_CHAT_NAME}@c.us` || c.id._serialized === client.info.wid._serialized);
             
             if (!targetChat) {
-                console.error(`❌ ERROR: Could not find chat with name "${TARGET_CHAT_NAME}". Available chats:`);
+                console.error(`❌ ERROR: Could not find chat with Name/ID "${TARGET_CHAT_NAME}". Available chats:`);
                 chats.slice(0, 10).forEach(c => console.log(` - ${c.name || c.id._serialized}`));
                 throw new Error(`Chat "${TARGET_CHAT_NAME}" not found`);
             }
@@ -108,7 +108,6 @@ client.on('ready', async () => {
                 
                 const diffHours = ((currentTimeMs - msgTimeMs) / (1000 * 60 * 60)).toFixed(2);
                 
-                // Detailed debug log per message requirements
                 console.log(`[DEBUG] Msg Timestamp: ${new Date(msgTimeMs).toLocaleString()} | Diff: ${diffHours} hrs ago | HasMedia: ${msg.hasMedia} | Body: ${msg.body ? msg.body.substring(0, 15) : 'N/A'}`);
                 
                 if (msgTimeMs > limitTimeMs) {
@@ -116,14 +115,13 @@ client.on('ready', async () => {
                 }
             }
 
-            console.log(`🔎 Correctly verified ${newMessages.length} messages within the valid 24h/new timeframe!`);
+            console.log(`🔎 Correctly verified ${newMessages.length} messages within the valid 24h timeframe!`);
 
             let currentBatch = { images: [], textMsg: null };
 
             for (const msgData of newMessages) {
                 const msg = msgData.original;
                 
-                // Track individual items explicitly as requested
                 if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
                     currentBatch.images.push(msg);
                     console.log(` -> Image Queued (Current count: ${currentBatch.images.length})`);
@@ -132,15 +130,14 @@ client.on('ready', async () => {
                     currentBatch.textMsg = msg;
                     console.log(` -> Text paired with ${currentBatch.images.length} images! Processing Saree Batch task...`);
                     
-                    // Task 1: Create PDF as before (Core feature of this script)
+                    // PDF Batch Creation
                     await createAndSendPDF(currentBatch);
                     
-                    // Task 2: Further exact tasks (Send Image natively, Send Text natively) as requested!
+                    // Fallback Direct Messages
                     for (const imgMsg of currentBatch.images) {
                         try {
                             const media = await imgMsg.downloadMedia();
                             if (media && appState.telegramChatId) {
-                                // Provide fallback to send native photos per user requirement 5
                                 const imgLocalPath = path.join(TEMP_DIR, `native_${Date.now()}.jpg`);
                                 fs.writeFileSync(imgLocalPath, Buffer.from(media.data, 'base64'));
                                 await bot.sendPhoto(appState.telegramChatId, imgLocalPath);
@@ -159,7 +156,6 @@ client.on('ready', async () => {
                     currentBatch = { images: [], textMsg: null }; 
                 }
                 
-                // For loose standalone messages, just save time to not duplicate
                 if (msgData.timeMs > appState.lastProcessedTimestamp) {
                      appState.lastProcessedTimestamp = msgData.timeMs;
                      saveState();
