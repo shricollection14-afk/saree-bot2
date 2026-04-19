@@ -9,7 +9,7 @@ const PDFDocument = require('pdfkit');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ENV_CHAT_ID = process.env.TELEGRAM_CHAT_ID ? Number(process.env.TELEGRAM_CHAT_ID) : null;
-const TARGET_CHAT_NAME = process.env.TARGET_CHAT_NAME || 'Telegram Manager'; // Aap isko apne chat/group ke exact naam me change kar sakte hain
+const TARGET_CHAT_NAME = 'Telegram Manager'; // Aap isko apne chat/group ke exact naam me change kar sakte hain
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 const TEMP_DIR = path.join(__dirname, 'temp');
