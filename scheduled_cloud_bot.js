@@ -3,39 +3,30 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs-extra');
 const path = require('path');
-const PDFDocument = require('pdfkit');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = Number(process.env.TELEGRAM_CHAT_ID);
 
-// 👉 ONLY NUMBER (no +, no space)
+// 👉 ONLY NUMBER (no +, no spaces)
 const TARGET_NUMBER = '916376620435';
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 
 const TEMP_DIR = path.join(__dirname, 'temp');
-const STATE_FILE = path.join(__dirname, 'state.json');
-
 fs.ensureDirSync(TEMP_DIR);
-
-let appState = { counter: 1, lastProcessedTimestamp: 0 };
-
-if (fs.existsSync(STATE_FILE)) {
-    try {
-        appState = JSON.parse(fs.readFileSync(STATE_FILE));
-    } catch {}
-}
-
-function saveState() {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(appState, null, 2));
-}
 
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
     puppeteer: {
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        executablePath: '/usr/bin/google-chrome-stable'
+        executablePath: '/usr/bin/google-chrome-stable',
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-web-security'
+        ]
     }
 });
 
@@ -43,17 +34,32 @@ client.on('ready', async () => {
     console.log('✅ WhatsApp Connected');
 
     try {
-        // ✅ Direct chat fetch (BEST METHOD)
         const chatId = `${TARGET_NUMBER}@c.us`;
-        const targetChat = await client.getChatById(chatId);
+
+        // ⏳ IMPORTANT: wait for full WhatsApp load
+        console.log("⏳ Waiting for WhatsApp to stabilize...");
+        await new Promise(r => setTimeout(r, 15000));
+
+        // 🔁 RETRY SYSTEM (fixes waitForChatLoading crash)
+        let targetChat;
+        for (let i = 0; i < 3; i++) {
+            try {
+                console.log(`🔄 Attempt ${i + 1} to fetch chat...`);
+                targetChat = await client.getChatById(chatId);
+                if (targetChat) break;
+            } catch (err) {
+                console.log("Retry error:", err.message);
+                await new Promise(r => setTimeout(r, 5000));
+            }
+        }
 
         if (!targetChat) {
-            throw new Error("Chat not found");
+            throw new Error("❌ Chat not found after retries");
         }
 
         console.log("✅ Chat Found:", targetChat.name || TARGET_NUMBER);
 
-        // ✅ Fetch messages
+        // 📥 Fetch messages
         const messages = await targetChat.fetchMessages({ limit: 100 });
         console.log("📩 Messages fetched:", messages.length);
 
@@ -62,16 +68,14 @@ client.on('ready', async () => {
 
         let validMessages = [];
 
-        // ✅ FILTER + COLLECT
         for (let msg of messages) {
             if (!msg.timestamp) continue;
 
-            const msgTime = msg.timestamp > 1000000000000 
-                ? msg.timestamp 
+            const msgTime = msg.timestamp > 1000000000000
+                ? msg.timestamp
                 : msg.timestamp * 1000;
 
             const diff = (now - msgTime) / (1000 * 60 * 60);
-
             console.log(`⏱ ${diff.toFixed(2)} hrs ago | Type: ${msg.type}`);
 
             if (msgTime >= last24hrs) {
@@ -81,10 +85,10 @@ client.on('ready', async () => {
 
         console.log("✅ Last 24h messages:", validMessages.length);
 
-        // ✅ SORT
+        // sort properly
         validMessages.sort((a, b) => a.msgTime - b.msgTime);
 
-        // ✅ PROCESS AFTER FETCH
+        // 📤 PROCESS AFTER FETCH
         for (let item of validMessages) {
             const msg = item.msg;
 
@@ -107,7 +111,7 @@ client.on('ready', async () => {
                     console.log("📤 Text sent");
                 }
 
-                // small delay (important)
+                // small delay (avoid block)
                 await new Promise(r => setTimeout(r, 1000));
 
             } catch (err) {
