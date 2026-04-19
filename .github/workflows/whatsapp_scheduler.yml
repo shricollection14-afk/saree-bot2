@@ -7,18 +7,29 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 18
-      - uses: actions/cache@v3
+          node-version: 20
+          
+      - uses: actions/cache@v4
         with:
           path: |
             .wwebjs_auth
             state.json
           key: wa-session-${{ github.run_id }}
           restore-keys: wa-session-
-      - run: sudo apt-get update && sudo apt-get install -y libgbm-dev libasound2t64 libnss3 libatk-bridge2.0-0 libgtk-3-0
+
+      # Ultimate Method: Chrome ki saari dependencies ek sath install karega
+      - name: Install Chrome Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable --no-install-recommends
+
       - run: npm install
       - run: node scheduled_cloud_bot.js
         env:
