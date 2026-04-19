@@ -69,7 +69,7 @@ client.on('message_create', async (msg) => {
     if (msg.hasMedia && msg.type === 'image') {
         q.images.push(msg);
         console.log(`Self Chat: Queued ${q.images.length} images`);
-    } else if (msg.body && q.images.length >= 5) {
+    } else if (msg.body && q.images.length >= 1) {
         q.textMsg = msg;
         console.log("Self Chat: Description received. Creating PDF...");
 
