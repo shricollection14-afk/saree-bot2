@@ -9,7 +9,7 @@ const PDFDocument = require('pdfkit');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ENV_CHAT_ID = process.env.TELEGRAM_CHAT_ID ? Number(process.env.TELEGRAM_CHAT_ID) : null;
-const TARGET_CHAT_NAME = process.env.TARGET_CHAT_NAME || 'You'; // Aap isko apne chat/group ke exact naam me change kar sakte hain
+const TARGET_CHAT_NAME = process.env.TARGET_CHAT_NAME || 'Kanchan(You)'; // Aap isko apne chat/group ke exact naam me change kar sakte hain
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -70,7 +70,7 @@ client.on('ready', async () => {
             console.log(`🔎 Looking for target chat by exact name: "${TARGET_CHAT_NAME}"`);
             
             const chats = await client.getChats();
-            const targetChat = chats.find(c => c.name === TARGET_CHAT_NAME || (TARGET_CHAT_NAME === 'You' && c.id._serialized === client.info.wid._serialized));
+            const targetChat = chats.find(c => c.name === TARGET_CHAT_NAME || c.id._serialized === client.info.wid._serialized);
             
             if (!targetChat) {
                 console.error(`❌ ERROR: Could not find chat with name "${TARGET_CHAT_NAME}". Available chats:`);
