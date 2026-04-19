@@ -14,14 +14,19 @@ const TEMP_DIR = path.join(__dirname, 'temp');
 const STATE_FILE = path.join(__dirname, 'state.json');
 
 fs.ensureDirSync(TEMP_DIR);
-let appState = { counter: 5, telegramChatId: ENV_CHAT_ID };
+let appState = { counter: 5, telegramChatId: ENV_CHAT_ID, lastProcessedTimestamp: 0 };
 
 if (fs.existsSync(STATE_FILE)) {
     try {
         const savedState = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
         appState.counter = savedState.counter || 5;
         appState.telegramChatId = ENV_CHAT_ID || savedState.telegramChatId;
+        appState.lastProcessedTimestamp = savedState.lastProcessedTimestamp || 0;
     } catch (e) {}
+}
+
+function saveState() {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(appState, null, 2));
 }
 
 const client = new Client({
@@ -36,51 +41,68 @@ const client = new Client({
 client.on('qr', async (qr) => {
     qrcodeTerminal.generate(qr, { small: true });
     if (appState.telegramChatId) {
-        const qrImageBuffer = await QRCode.toBuffer(qr);
-        await bot.sendPhoto(appState.telegramChatId, qrImageBuffer, { caption: "🚨 *Scan QR*" });
+        try {
+            const qrImageBuffer = await QRCode.toBuffer(qr);
+            await bot.sendPhoto(appState.telegramChatId, qrImageBuffer, { caption: "🚨 *Scan QR*" });
+        } catch(e) {}
     }
 });
 
 client.on('ready', async () => {
-    console.log('✅ CONNECTED! Searching Self-Chat for Saree batches...');
-    const myId = client.info.wid._serialized;
+    console.log('✅ CONNECTED! Waiting 15 seconds for WhatsApp to fetch old offline messages before scanning...');
+    
+    // WA Web ko thoda time chahiye hota hai offline messages download karne ke liye
+    setTimeout(async () => {
+        const myId = client.info.wid._serialized;
 
-    try {
-        const chat = await client.getChatById(myId);
-        const allMessages = await chat.fetchMessages({ limit: 100 });
-        
-        // Time Filter: Pichle 24 ghante (Last 24 Hours)
-        const twentyFourHoursAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
-        
-        const recentMessages = allMessages.filter(m => m.timestamp >= twentyFourHoursAgo);
-        console.log(`Searching through ${recentMessages.length} recent messages...`);
+        try {
+            const chat = await client.getChatById(myId);
+            const allMessages = await chat.fetchMessages({ limit: 100 });
+            
+            // MAGIC FIX: Puraane process hue messages ko chhod kar, sirf naye wale message uthao!
+            const newMessages = allMessages.filter(m => m.timestamp > appState.lastProcessedTimestamp);
+            console.log(`Found ${newMessages.length} NEW messages in Self-Chat since your last sync.`);
 
-        let currentBatch = { images: [], textMsg: null };
-
-        for (const msg of recentMessages) {
-            // Media detection
-            if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
-                currentBatch.images.push(msg);
-                console.log(`   -> Found Image! (Queue: ${currentBatch.images.length})`);
-            } 
-            // Text detection (Batch end)
-            else if (msg.body && currentBatch.images.length >= 1) {
-                currentBatch.textMsg = msg;
-                console.log(`   -> Found Text: "${msg.body.substring(0,20)}...". Sending PDF!`);
-                await createAndSendPDF(currentBatch);
-                currentBatch = { images: [], textMsg: null }; // Reset
+            // Dhyan se dekhne ke liye logs
+            if (newMessages.length > 0) {
+                console.log("---- MESSAGE LIST ----");
+                newMessages.forEach((m, idx) => {
+                    console.log(`${idx+1}. Media: ${m.hasMedia}, Type: ${m.type}, Text: ${m.body ? m.body.substring(0,15) : 'none'}`);
+                });
+                console.log("----------------------");
             }
-        }
-    } catch (err) { console.error("Critical Error:", err); }
 
-    if (appState.telegramChatId) bot.sendMessage(appState.telegramChatId, "✅ Sync Job Finished.");
-    setTimeout(() => { process.exit(0); }, 30000);
+            let currentBatch = { images: [], textMsg: null };
+
+            for (const msg of newMessages) {
+                if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
+                    currentBatch.images.push(msg);
+                } 
+                else if (msg.body && currentBatch.images.length >= 1) {
+                    currentBatch.textMsg = msg;
+                    console.log(`-> Batch pakda gaya! Images: ${currentBatch.images.length}. PDF ban raha hai...`);
+                    
+                    await createAndSendPDF(currentBatch);
+                    
+                    // Jaise hi PDF ban jaye, is aakhri message ka time save karlo taki dubara isey na padhe
+                    appState.lastProcessedTimestamp = msg.timestamp;
+                    saveState();
+                    
+                    currentBatch = { images: [], textMsg: null }; // Reset agle batch ke liye
+                }
+            }
+        } catch (err) { console.error("Sync Error:", err); }
+
+        if (appState.telegramChatId) bot.sendMessage(appState.telegramChatId, "✅ Aaj ka Sync Process poora ho gaya!");
+        setTimeout(() => { process.exit(0); }, 30000);
+
+    }, 20000); // 20 Seconds ki delay
 });
 
 async function createAndSendPDF(batch) {
     const title = `Saree_${appState.counter.toString().padStart(2, '0')}`;
     appState.counter++;
-    fs.writeFileSync(STATE_FILE, JSON.stringify(appState));
+    saveState();
     
     const pdfPath = path.join(TEMP_DIR, `${title}.pdf`);
     console.log(`Creating: ${pdfPath}`);
@@ -106,8 +128,8 @@ async function createAndSendPDF(batch) {
         await new Promise(resolve => stream.on('finish', resolve));
         await bot.sendDocument(appState.telegramChatId, pdfPath, { caption: `✅ ${title} Ready!` });
         fs.unlinkSync(pdfPath);
-        console.log(`Sent: ${title} Successfully!`);
-    } catch (e) { console.error("PDF Creation Failed:", e); }
+        console.log(`!! SUCCESS !! ${title} Sent to Telegram.`);
+    } catch (e) { console.error("PDF Fail:", e); }
 }
 
 client.initialize();
