@@ -48,92 +48,57 @@ client.on('qr', async (qr) => {
     }
 });
 
-let isProcessCompleted = false;
+
+let chatQueues = {};
+let pdfsSent = 0;
 
 client.on('ready', async () => {
-    console.log('✅ CONNECTED! Waiting 30 SECONDS for WhatsApp to fetch old offline messages before scanning...');
-    if (appState.telegramChatId) {
-        bot.sendMessage(appState.telegramChatId, "✅ Sync shuru ho gaya. Purane messages download ho rahe hain...");
+    console.log('✅ CONNECTED! Listening for pending messages...');
+    
+    // Server poore 5 Minute (300 sec) ON rahega, taki offline msgs naturally aate rahein:
+    setTimeout(() => {
+        if (appState.telegramChatId) {
+            if (pdfsSent > 0) {
+                bot.sendMessage(appState.telegramChatId, `✅ Cloud Sync Complete. Saree pdfs delivered: ${pdfsSent}`);
+            } else {
+                bot.sendMessage(appState.telegramChatId, `💤 Cloud Sync Complete. Aaj koi naya saree data nahi mila.`);
+            }
+        }
+        console.log("5 minutes complete. Exiting gracefully.");
+        process.exit(0);
+    }, 5 * 60 * 1000); 
+});
+
+client.on('message_create', async (msg) => {
+    const myId = client.info.wid._serialized;
+    const isSelfChat = (msg.from === myId && msg.to === myId);
+
+    if (!isSelfChat) return;
+
+    if (msg.timestamp <= appState.lastProcessedTimestamp) {
+        return; 
     }
 
-    // 10 minute ka absolute timeout. 10 min baad script zarur band hogi.
-    setTimeout(() => {
-        if (!isProcessCompleted) {
-            console.log("10 minutes up. Finishing process.");
-            process.exit(0);
-        }
-    }, 10 * 60 * 1000);
+    if (!chatQueues[myId]) chatQueues[myId] = { images: [], textMsg: null };
+    const q = chatQueues[myId];
 
-    // WA Web ko pakka time chahiye hota hai old messages fetch karne ke liye (30 seconds)
-    setTimeout(async () => {
-        const myId = client.info.wid._serialized;
+    if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
+        q.images.push(msg);
+        console.log(`📸 Image Received & Queued! (Total: ${q.images.length})`);
+    } else if (msg.body && q.images.length >= 1) {
+        q.textMsg = msg;
+        console.log(`💬 Text Received: "${msg.body.substring(0, 20)}". Generating PDF...`);
 
-        try {
-            // Hum LIVE message_create event ka bhi istaamal karenge safety ke liye
-            const chat = await client.getChatById(myId);
-            const allMessages = await chat.fetchMessages({ limit: 100 });
-            
-            // MAGIC FIX: Puraane process hue messages ko chhod kar, sirf naye wale message uthao!
-            // Agar pehli baar chal raha hai toh pichle kuch din ke hi dekho 
-            let minimumTime = appState.lastProcessedTimestamp;
-            if (minimumTime === 0) {
-                 minimumTime = Math.floor(Date.now() / 1000) - (24 * 60 * 60); // 24 hours ago limits
-            }
-
-            const newMessages = allMessages.filter(m => m.timestamp > minimumTime);
-            console.log(`🔎 Total ${newMessages.length} NEW messages found in Self-Chat since your last check.`);
-
-            // Dhyan se dekhne ke liye logs
-            if (newMessages.length > 0) {
-                console.log("---- WHATSAPP SE KYA MILA ----");
-                newMessages.forEach((m, idx) => {
-                    console.log(`Msg ${idx+1}: FROM=${m.from}, TO=${m.to}, Media=${m.hasMedia}, Text=${m.body ? m.body.substring(0,25) : 'None'}, Time=${m.timestamp}`);
-                });
-                console.log("----------------------");
-            } else {
-                 console.log("⚠ Koi naye message nahi mile hain. Ho sakta hai aapne self-chat me bheje hi na ho, ya pehle se processed ho.");
-            }
-
-            let currentBatch = { images: [], textMsg: null };
-            let pdfsSent = 0;
-
-            for (const msg of newMessages) {
-                if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
-                    currentBatch.images.push(msg);
-                } 
-                else if (msg.body && currentBatch.images.length >= 1) {
-                    currentBatch.textMsg = msg;
-                    console.log(`-> EK BATCH MIL GAYA! Jisme ${currentBatch.images.length} images hain. File ban rahi hai...`);
-                    
-                    await createAndSendPDF(currentBatch);
-                    pdfsSent++;
-                    
-                    // Update cache timestamp taaki dubara yahi file na bane
-                    appState.lastProcessedTimestamp = msg.timestamp;
-                    saveState();
-                    
-                    currentBatch = { images: [], textMsg: null }; // Reset agle batch ke liye
-                }
-            }
-
-            isProcessCompleted = true; // Taaki exit cleanly ho jaye
-            if (appState.telegramChatId) {
-                if (pdfsSent > 0) {
-                    bot.sendMessage(appState.telegramChatId, `✅ Aaj ka Sync Process poora ho gaya! ${pdfsSent} nai saree/PDF add hue.`);
-                } else {
-                     bot.sendMessage(appState.telegramChatId, `✅ Sync pura hua. Koi naye saree batch photos nahi mile.`);
-                }
-            }
-            // Sync poora hote hi band kardo
-            console.log("All done, exiting cleanly.");
-            setTimeout(() => { process.exit(0); }, 5000);
-
-        } catch (err) { 
-            console.error("Sync Error:", err); 
-            process.exit(1);
-        }
-
-    }, 30000); // 30 SECONDS DELAY
+        // Batch processing shuru hone wala hai
+        await createAndSendPDF(q);
+        
+        // Pura ho jaye tab timestamp update hoga
+        appState.lastProcessedTimestamp = msg.timestamp;
+        saveState();
+        
+        pdfsSent++;
+        delete chatQueues[myId];
+    }
 });
 
 async function createAndSendPDF(batch) {
@@ -142,7 +107,7 @@ async function createAndSendPDF(batch) {
     saveState();
     
     const pdfPath = path.join(TEMP_DIR, `${title}.pdf`);
-    console.log(`⏳ PDF Bani jaa rhi hai: ${pdfPath}`);
+    console.log(`Creating: ${title}.pdf`);
 
     try {
         const doc = new PDFDocument();
@@ -158,11 +123,9 @@ async function createAndSendPDF(batch) {
                     fs.writeFileSync(imgLocalPath, Buffer.from(media.data, 'base64'));
                     doc.addPage().image(imgLocalPath, { fit: [500, 700], align: 'center' });
                     fs.unlinkSync(imgLocalPath);
-                } else {
-                    console.log("⚠ Ek photo load nahi ho payi WhatsApp server se.");
                 }
             } catch (err) {
-                 console.error("⚠ Photo download error:", err.message);
+                 console.error("⚠ Photo download error. Skipping one image.", err.message);
             }
         }
         
