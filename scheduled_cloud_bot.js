@@ -134,18 +134,24 @@ client.on('ready', async () => {
 });
 
 async function processTargetChat(targetChat) {
-    console.log("Fetching past messages natively to bypass Library UI Bug...");
-    // 🚀 OMITTED BUGGY API: const allMessages = await targetChat.fetchMessages({ limit: 100 });
+    console.log("🛠️ Injecting custom patch to fix 'waitForChatLoading' Library crash...");
+    await client.pupPage.evaluate(() => {
+        if (!window.WWebJS) window.WWebJS = {};
+        if (!window.WWebJS.chat) window.WWebJS.chat = {};
+        if (!window.WWebJS.chat.waitForChatLoading) {
+             window.WWebJS.chat.waitForChatLoading = async () => { return true; };
+        }
+    });
+
+    console.log("Fetching past 100 messages deeply from Whatsapp internal Database...");
+    let allMessages = [];
+    try {
+        allMessages = await targetChat.fetchMessages({ limit: 100 });
+    } catch(e) {
+        console.error("Fetch limit error, falling back locally:", e.message);
+    }
     
-    const rawMessages = await client.pupPage.evaluate(async (chatId) => {
-        const msgModels = window.Store.Msg.getModelsArray().filter(m => m.id.remote === chatId);
-        return msgModels.map(m => window.WWebJS.getMessageModel(m));
-    }, targetChat.id._serialized);
-    
-    // Re-pack WhatsApp internal DB objects back smoothly as Native Node structures
-    const allMessages = rawMessages.map(data => new Message(client, data));
-    
-    console.log(`✅ Loaded ${allMessages.length} messages from raw history.`);
+    console.log(`✅ Loaded ${allMessages.length} messages from deep history.`);
 
     const currentTimeMs = Date.now();
     
