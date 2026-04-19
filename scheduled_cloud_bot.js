@@ -7,7 +7,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const PDFDocument = require('pdfkit');
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8747605183:AAGW6zNtd5CVscCWCf_5ZoGqnlRlnvqTWno';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ENV_CHAT_ID = process.env.TELEGRAM_CHAT_ID ? Number(process.env.TELEGRAM_CHAT_ID) : null;
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -21,11 +21,7 @@ if (fs.existsSync(STATE_FILE)) {
         const savedState = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
         appState.counter = savedState.counter || 5;
         appState.telegramChatId = ENV_CHAT_ID || savedState.telegramChatId;
-    } catch (e) { console.error("Error reading state.json:", e); }
-}
-
-function saveState() {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(appState, null, 2));
+    } catch (e) {}
 }
 
 const client = new Client({
@@ -38,72 +34,77 @@ const client = new Client({
 });
 
 client.on('qr', async (qr) => {
-    console.log('SCAN THIS QR CODE:');
     qrcodeTerminal.generate(qr, { small: true });
     if (appState.telegramChatId) {
-        try {
-            const qrImageBuffer = await QRCode.toBuffer(qr);
-            await bot.sendPhoto(appState.telegramChatId, qrImageBuffer, { caption: "🚨 *WhatsApp Login Required*" });
-        } catch (err) { console.error("QR Error:", err.message); }
+        const qrImageBuffer = await QRCode.toBuffer(qr);
+        await bot.sendPhoto(appState.telegramChatId, qrImageBuffer, { caption: "🚨 *Scan QR*" });
     }
 });
 
-client.on('ready', () => {
-    console.log('WhatsApp Client is ready! Monitoring SELF CHAT only.');
-    if (appState.telegramChatId) bot.sendMessage(appState.telegramChatId, "✅ Cloud Saree Bot connected! Monitoring Self-Chat only.");
-    setTimeout(() => { process.exit(0); }, 10 * 60 * 1000);
-});
-
-const chatQueues = {};
-
-client.on('message_create', async (msg) => {
-    // SIRF SELF CHAT CHECK: Kya ye message mere khud ke number se hai aur mujhe hi bhej gaya hai?
+client.on('ready', async () => {
+    console.log('✅ CONNECTED! Scanning TODAY\'S messages only...');
     const myId = client.info.wid._serialized;
-    const isSelfChat = (msg.from === myId && msg.to === myId);
 
-    if (!isSelfChat) return; // Agar self-chat nahi hai, toh kuch mat karo.
+    try {
+        const chat = await client.getChatById(myId);
+        const messages = await chat.fetchMessages({ limit: 100 });
+        
+        // Aaj ki date ke liye start time (Subah 12 AM)
+        const startOfToday = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
+        
+        // Sirf Aaj ke messages ko filter karein
+        const todaysMessages = messages.filter(m => m.timestamp >= startOfToday);
+        console.log(`Found ${todaysMessages.length} messages from Today.`);
 
-    if (!chatQueues[myId]) chatQueues[myId] = { images: [], textMsg: null };
-    const q = chatQueues[myId];
+        let currentBatch = { images: [], textMsg: null };
 
-    if (msg.hasMedia && msg.type === 'image') {
-        q.images.push(msg);
-        console.log(`Self Chat: Queued ${q.images.length} images`);
-    } else if (msg.body && q.images.length >= 1) {
-        q.textMsg = msg;
-        console.log("Self Chat: Description received. Creating PDF...");
-
-        // PDF Generation Logic
-        const title = `Saree_${appState.counter.toString().padStart(2, '0')}`;
-        appState.counter++;
-        saveState();
-        const pdfPath = path.join(TEMP_DIR, `${title}.pdf`);
-
-        try {
-            const doc = new PDFDocument();
-            const stream = fs.createWriteStream(pdfPath);
-            doc.pipe(stream);
-            doc.fontSize(25).text(title, { align: 'center' });
-            for (const imgMsg of q.images) {
-                const media = await imgMsg.downloadMedia();
-                if (media) {
-                    const imgLocalPath = path.join(TEMP_DIR, `temp_${Date.now()}.jpg`);
-                    fs.writeFileSync(imgLocalPath, Buffer.from(media.data, 'base64'));
-                    doc.addPage().image(imgLocalPath, { fit: [500, 700], align: 'center' });
-                    fs.unlinkSync(imgLocalPath);
-                }
+        for (const msg of todaysMessages) {
+            if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
+                currentBatch.images.push(msg);
+            } else if (msg.body && currentBatch.images.length >= 1) {
+                currentBatch.textMsg = msg;
+                await createAndSendPDF(currentBatch);
+                currentBatch = { images: [], textMsg: null };
             }
-            doc.addPage().fontSize(15).text("Description: " + q.textMsg.body);
-            doc.end();
-            stream.on('finish', async () => {
-                await bot.sendDocument(appState.telegramChatId, pdfPath, { caption: `Generated for ${title}` });
-                fs.unlinkSync(pdfPath);
-                console.log(`Success: ${title} sent to Telegram!`);
-            });
-        } catch (e) { console.error(e); }
-        delete chatQueues[myId]; // Reset queue after processing
-    }
+        }
+    } catch (err) { console.error(err); }
+
+    if (appState.telegramChatId) bot.sendMessage(appState.telegramChatId, "✅ Today's sync complete!");
+    setTimeout(() => { process.exit(0); }, 20000);
 });
 
-console.log("Starting WhatsApp Client...");
+async function createAndSendPDF(batch) {
+    const title = `Saree_${appState.counter.toString().padStart(2, '0')}`;
+    appState.counter++;
+    fs.writeFileSync(STATE_FILE, JSON.stringify(appState));
+    
+    const pdfPath = path.join(TEMP_DIR, `${title}.pdf`);
+    console.log(`Creating: ${title}`);
+
+    try {
+        const doc = new PDFDocument();
+        const stream = fs.createWriteStream(pdfPath);
+        doc.pipe(stream);
+        doc.fontSize(25).text(title, { align: 'center' });
+
+        for (const imgMsg of batch.images) {
+            const media = await imgMsg.downloadMedia();
+            if (media) {
+                const imgLocalPath = path.join(TEMP_DIR, `temp_${Date.now()}_${Math.random()}.jpg`);
+                fs.writeFileSync(imgLocalPath, Buffer.from(media.data, 'base64'));
+                doc.addPage().image(imgLocalPath, { fit: [500, 700], align: 'center' });
+                fs.unlinkSync(imgLocalPath);
+            }
+        }
+        doc.addPage().fontSize(15).text("Description: " + batch.textMsg.body);
+        doc.end();
+
+        await new Promise(resolve => stream.on('finish', resolve));
+        await bot.sendDocument(appState.telegramChatId, pdfPath);
+        fs.unlinkSync(pdfPath);
+        console.log(`Sent: ${title}`);
+    } catch (e) { console.error(e); }
+}
+
+console.log("Starting WhatsApp...");
 client.initialize();
