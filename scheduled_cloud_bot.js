@@ -49,57 +49,94 @@ client.on('qr', async (qr) => {
 });
 
 
-let chatQueues = {};
 let pdfsSent = 0;
+let isProcessCompleted = false;
 
 client.on('ready', async () => {
-    console.log('✅ CONNECTED! Listening for pending messages...');
+    console.log('✅ CONNECTED! Waiting 15 Seconds before doing anything...');
     
-    // Server poore 5 Minute (300 sec) ON rahega, taki offline msgs naturally aate rahein:
+    // Safety Force Exit after 10 mins
     setTimeout(() => {
-        if (appState.telegramChatId) {
-            if (pdfsSent > 0) {
-                bot.sendMessage(appState.telegramChatId, `✅ Cloud Sync Complete. Saree pdfs delivered: ${pdfsSent}`);
-            } else {
-                bot.sendMessage(appState.telegramChatId, `💤 Cloud Sync Complete. Aaj koi naya saree data nahi mila.`);
-            }
+        if (!isProcessCompleted) {
+             console.log("Forcing exit after 10 mins.");
+             process.exit(0);
         }
-        console.log("5 minutes complete. Exiting gracefully.");
-        process.exit(0);
-    }, 5 * 60 * 1000); 
+    }, 10 * 60 * 1000);
+
+    setTimeout(async () => {
+        const myId = client.info.wid._serialized;
+
+        try {
+            const chat = await client.getChatById(myId);
+            
+            // MAGIC FIX FOR 'waitForChatLoading' ERROR:
+            // Hum bot se pehle ek chota sa message send karwayenge. Message send karte hi 
+            // WhatsApp ka internal UI "Wake up" (Jaag) ho jata hai aur purane errors gayab ho jate h.
+            console.log("Waking up chat UI...");
+            await chat.sendMessage("🔄 Cloud bot is scanning your past 24h messages...");
+            
+            // Wait 5 seconds after sending the message to let data load
+            await new Promise(resolve => setTimeout(resolve, 5000));
+
+            console.log("Fetching past messages...");
+            const allMessages = await chat.fetchMessages({ limit: 100 });
+            
+            // 24 HOURS TIME FILTER (Aur unhe ignore karna chhod jo already ho chuke hain)
+            let limitTime = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
+            if (appState.lastProcessedTimestamp > limitTime) {
+                limitTime = appState.lastProcessedTimestamp;
+            }
+
+            const newMessages = allMessages.filter(m => m.timestamp > limitTime && !m.body.includes('Cloud bot'));
+            console.log(`🔎 Total ${newMessages.length} PENDING messages found in the last 24 hours!`);
+
+            let currentBatch = { images: [], textMsg: null };
+
+            for (const msg of newMessages) {
+                if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
+                    currentBatch.images.push(msg);
+                } 
+                else if (msg.body && currentBatch.images.length >= 1) {
+                    currentBatch.textMsg = msg;
+                    console.log(`-> Batch pakda gaya! Images: ${currentBatch.images.length}. PDF ban raha hai...`);
+                    
+                    await createAndSendPDF(currentBatch);
+                    pdfsSent++;
+                    
+                    // Saath-saath save karo
+                    appState.lastProcessedTimestamp = msg.timestamp;
+                    saveState();
+                    
+                    currentBatch = { images: [], textMsg: null }; 
+                }
+                
+                // Update timestamp for standalone texts otherwise so we don't scan them again
+                if (msg.timestamp > appState.lastProcessedTimestamp) {
+                     appState.lastProcessedTimestamp = msg.timestamp;
+                     saveState();
+                }
+            }
+
+            isProcessCompleted = true;
+            if (appState.telegramChatId) {
+                if (pdfsSent > 0) {
+                    bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Sync Complete. Saree pdfs delivered: ${pdfsSent}`);
+                } else {
+                    bot.sendMessage(appState.telegramChatId, `💤 24-Hour Sync Complete. Koi nai saree photos nahi mili.`);
+                }
+            }
+            
+            console.log("Job Done. Closing bot in 5 seconds.");
+            setTimeout(() => { process.exit(0); }, 5000);
+
+        } catch (err) { 
+            console.error("Sync Error:", err); 
+            process.exit(1);
+        }
+
+    }, 15000); // 15 Seconds Start Delay
 });
 
-client.on('message_create', async (msg) => {
-    const myId = client.info.wid._serialized;
-    const isSelfChat = (msg.from === myId && msg.to === myId);
-
-    if (!isSelfChat) return;
-
-    if (msg.timestamp <= appState.lastProcessedTimestamp) {
-        return; 
-    }
-
-    if (!chatQueues[myId]) chatQueues[myId] = { images: [], textMsg: null };
-    const q = chatQueues[myId];
-
-    if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
-        q.images.push(msg);
-        console.log(`📸 Image Received & Queued! (Total: ${q.images.length})`);
-    } else if (msg.body && q.images.length >= 1) {
-        q.textMsg = msg;
-        console.log(`💬 Text Received: "${msg.body.substring(0, 20)}". Generating PDF...`);
-
-        // Batch processing shuru hone wala hai
-        await createAndSendPDF(q);
-        
-        // Pura ho jaye tab timestamp update hoga
-        appState.lastProcessedTimestamp = msg.timestamp;
-        saveState();
-        
-        pdfsSent++;
-        delete chatQueues[myId];
-    }
-});
 
 async function createAndSendPDF(batch) {
     const title = `Saree_${appState.counter.toString().padStart(2, '0')}`;
@@ -124,9 +161,7 @@ async function createAndSendPDF(batch) {
                     doc.addPage().image(imgLocalPath, { fit: [500, 700], align: 'center' });
                     fs.unlinkSync(imgLocalPath);
                 }
-            } catch (err) {
-                 console.error("⚠ Photo download error. Skipping one image.", err.message);
-            }
+            } catch (err) { }
         }
         
         doc.addPage().fontSize(15).text("Description: " + batch.textMsg.body);
@@ -136,7 +171,7 @@ async function createAndSendPDF(batch) {
         await bot.sendDocument(appState.telegramChatId, pdfPath, { caption: `✅ ${title} Ready!` });
         fs.unlinkSync(pdfPath);
         console.log(`!! SUCCESS !! ${title} Sent to Telegram.`);
-    } catch (e) { console.error("PDF Fail:", e); }
+    } catch (e) { }
 }
 
 client.initialize();
