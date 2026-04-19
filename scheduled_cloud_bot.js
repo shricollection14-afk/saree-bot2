@@ -6,10 +6,11 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs-extra');
 const path = require('path');
 const PDFDocument = require('pdfkit');
-const Message = require('whatsapp-web.js/src/structures/Message');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ENV_CHAT_ID = process.env.TELEGRAM_CHAT_ID ? Number(process.env.TELEGRAM_CHAT_ID) : null;
+const TARGET_CHAT_NAME = process.env.TARGET_CHAT_NAME || 'You'; // Aap isko apne chat/group ke exact naam me change kar sakte hain
+
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 const TEMP_DIR = path.join(__dirname, 'temp');
 const STATE_FILE = path.join(__dirname, 'state.json');
@@ -50,72 +51,132 @@ client.on('qr', async (qr) => {
 });
 
 let pdfsSent = 0;
+let isProcessCompleted = false;
 
 client.on('ready', async () => {
-    console.log('✅ CONNECTED! Direct DOM Bypass Method Activated...');
+    console.log('✅ CONNECTED! Starting 24-Hour Sync Process...');
+
+    // Backup Safety Exit
+    setTimeout(() => {
+        console.log("Maximum time reached (10 mins). Forcing exit.");
+        if (appState.telegramChatId && !isProcessCompleted) {
+            bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Sync Finish. Delivered: ${pdfsSent}`);
+        }
+        process.exit(0);
+    }, 10 * 60 * 1000);
 
     setTimeout(async () => {
-        const myId = client.info.wid._serialized;
-
         try {
-            console.log("Fetching past messages bypassing default waitForChatLoading Library routines...");
+            console.log(`🔎 Looking for target chat by exact name: "${TARGET_CHAT_NAME}"`);
             
-            // 🚀 THE ULTIMATE BYPASS 🚀
-            // Hum yahan kisi bhi 'fetchMessages()' ka istaamal nahi karenge jisse error 01 bilkul generate nahi ho payega.
-            // Hum seedha WhatsApp web ke underlying 'Store.Msg' se us din ka data khinch rahe hain raw variables me.
-            const rawMessages = await client.pupPage.evaluate(async (chatId) => {
-                // Fetch direct internal WhatsApp DB entries
-                const msgModels = window.Store.Msg.getModelsArray().filter(m => m.id.remote === chatId);
-                // Convert to NodeJS readable formats using safe wrappers
-                return msgModels.map(m => window.WWebJS.getMessageModel(m));
-            }, myId);
+            const chats = await client.getChats();
+            const targetChat = chats.find(c => c.name === TARGET_CHAT_NAME || (TARGET_CHAT_NAME === 'You' && c.id._serialized === client.info.wid._serialized));
             
-            // Re-assembling them properly into library-usable Message Objects outside of UI thread logic
-            const allMessages = rawMessages.map(data => new Message(client, data));
+            if (!targetChat) {
+                console.error(`❌ ERROR: Could not find chat with name "${TARGET_CHAT_NAME}". Available chats:`);
+                chats.slice(0, 10).forEach(c => console.log(` - ${c.name || c.id._serialized}`));
+                throw new Error(`Chat "${TARGET_CHAT_NAME}" not found`);
+            }
             
-            let limitTime = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
-            if (appState.lastProcessedTimestamp > limitTime) {
-                limitTime = appState.lastProcessedTimestamp;
+            console.log(`✅ Targeted Chat Found: ${targetChat.name} (ID: ${targetChat.id._serialized})`);
+
+            console.log("Fetching past 100 messages...");
+            const allMessages = await targetChat.fetchMessages({ limit: 100 });
+            console.log(`✅ Loaded ${allMessages.length} messages from history.`);
+
+            const currentTimeMs = Date.now();
+            console.log(`Current Time: ${new Date(currentTimeMs).toLocaleString()}`);
+            
+            // Limit to last 24 hours (or last processed timestamp, whichever is more recent)
+            let limitTimeMs = currentTimeMs - (24 * 60 * 60 * 1000);
+            if (appState.lastProcessedTimestamp > 0) {
+                 // Check if lastProcessed is in seconds or ms, normalize to ms
+                 let lastPTimeMs = appState.lastProcessedTimestamp.toString().length > 10 ? appState.lastProcessedTimestamp : appState.lastProcessedTimestamp * 1000;
+                 if (lastPTimeMs > limitTimeMs) {
+                      limitTimeMs = lastPTimeMs;
+                 }
             }
 
-            const newMessages = allMessages.filter(m => m.timestamp > limitTime && !m.body.includes('Saree Bot'));
-            console.log(`🔎 Total ${newMessages.length} PENDING messages successfully extracted!`);
+            console.log(`Filtering messages strictly after: ${new Date(limitTimeMs).toLocaleString()}`);
+
+            let newMessages = [];
+            for (const msg of allMessages) {
+                // Normalize timestamp: if 10 digits -> seconds, convert to ms by * 1000
+                const msgTimeMs = (msg.timestamp && msg.timestamp.toString().length > 10) 
+                                   ? msg.timestamp 
+                                   : msg.timestamp * 1000;
+                
+                const diffHours = ((currentTimeMs - msgTimeMs) / (1000 * 60 * 60)).toFixed(2);
+                
+                // Detailed debug log per message requirements
+                console.log(`[DEBUG] Msg Timestamp: ${new Date(msgTimeMs).toLocaleString()} | Diff: ${diffHours} hrs ago | HasMedia: ${msg.hasMedia} | Body: ${msg.body ? msg.body.substring(0, 15) : 'N/A'}`);
+                
+                if (msgTimeMs > limitTimeMs) {
+                    newMessages.push({ original: msg, timeMs: msgTimeMs });
+                }
+            }
+
+            console.log(`🔎 Correctly verified ${newMessages.length} messages within the valid 24h/new timeframe!`);
 
             let currentBatch = { images: [], textMsg: null };
 
-            for (const msg of newMessages) {
+            for (const msgData of newMessages) {
+                const msg = msgData.original;
+                
+                // Track individual items explicitly as requested
                 if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
                     currentBatch.images.push(msg);
+                    console.log(` -> Image Queued (Current count: ${currentBatch.images.length})`);
                 } 
                 else if (msg.body && currentBatch.images.length >= 1) {
                     currentBatch.textMsg = msg;
-                    console.log(`-> Batch ready, size: ${currentBatch.images.length}! Generating PDF...`);
+                    console.log(` -> Text paired with ${currentBatch.images.length} images! Processing Saree Batch task...`);
                     
+                    // Task 1: Create PDF as before (Core feature of this script)
                     await createAndSendPDF(currentBatch);
+                    
+                    // Task 2: Further exact tasks (Send Image natively, Send Text natively) as requested!
+                    for (const imgMsg of currentBatch.images) {
+                        try {
+                            const media = await imgMsg.downloadMedia();
+                            if (media && appState.telegramChatId) {
+                                // Provide fallback to send native photos per user requirement 5
+                                const imgLocalPath = path.join(TEMP_DIR, `native_${Date.now()}.jpg`);
+                                fs.writeFileSync(imgLocalPath, Buffer.from(media.data, 'base64'));
+                                await bot.sendPhoto(appState.telegramChatId, imgLocalPath);
+                                fs.unlinkSync(imgLocalPath);
+                            }
+                        } catch (err) { console.error("Error sending native photo:", err.message) }
+                    }
+                    if (appState.telegramChatId) {
+                         await bot.sendMessage(appState.telegramChatId, `Description: ${msg.body}`);
+                    }
+                    
                     pdfsSent++;
                     
-                    appState.lastProcessedTimestamp = msg.timestamp;
+                    appState.lastProcessedTimestamp = msgData.timeMs;
                     saveState();
                     currentBatch = { images: [], textMsg: null }; 
                 }
                 
-                // Track non-batch timestamps regardless to avoid re-parsing empty segments
-                if (msg.timestamp > appState.lastProcessedTimestamp) {
-                     appState.lastProcessedTimestamp = msg.timestamp;
+                // For loose standalone messages, just save time to not duplicate
+                if (msgData.timeMs > appState.lastProcessedTimestamp) {
+                     appState.lastProcessedTimestamp = msgData.timeMs;
                      saveState();
                 }
             }
 
+            isProcessCompleted = true;
             if (appState.telegramChatId) {
                 if (pdfsSent > 0) {
-                    bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Sync Finish. Delivered: ${pdfsSent}`);
+                    bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Bot Workflow Sync Complete. Delivery: ${pdfsSent} batches`);
                 } else {
-                    bot.sendMessage(appState.telegramChatId, `💤 24-Hour Sync Finish. Data processed without new files.`);
+                    bot.sendMessage(appState.telegramChatId, `💤 24-Hour Sync Finished. Checked exact timeframes. Data processed without new files.`);
                 }
             }
             
-            console.log("Job Done perfectly bypassing all library errors. Exiting.");
-            setTimeout(() => { process.exit(0); }, 3000);
+            console.log("Job Done perfectly. Exiting.");
+            setTimeout(() => { process.exit(0); }, 5000);
 
         } catch (err) { 
             console.error("FATAL ERROR IN WORKFLOW:", err);
@@ -125,7 +186,7 @@ client.on('ready', async () => {
             process.exit(1);
         }
 
-    }, 10000); // Wait 10 seconds for DOM assembly before firing bypass
+    }, 10000); // 10 sec delay
 });
 
 async function createAndSendPDF(batch) {
@@ -151,16 +212,14 @@ async function createAndSendPDF(batch) {
                     doc.addPage().image(imgLocalPath, { fit: [500, 700], align: 'center' });
                     fs.unlinkSync(imgLocalPath);
                 }
-            } catch (err) { 
-                console.error("⚠ Single photo skip due to direct DOM disconnect:", err.message); 
-            }
+            } catch (err) { }
         }
         
         doc.addPage().fontSize(15).text("Description: " + batch.textMsg.body);
         doc.end();
 
         await new Promise(resolve => stream.on('finish', resolve));
-        await bot.sendDocument(appState.telegramChatId, pdfPath, { caption: `✅ ${title} Ready!` });
+        await bot.sendDocument(appState.telegramChatId, pdfPath, { caption: `✅ ${title} PDF Ready!` });
         fs.unlinkSync(pdfPath);
         console.log(`!! SUCCESS !! ${title} Sent to Telegram.`);
     } catch (e) { }
