@@ -1,42 +1,26 @@
 name: Saree WhatsApp Sync Bot
-
 on:
   schedule:
-    # 3:30 PM UTC = 9:00 PM IST (Daily)
     - cron: '30 15 * * *'
-  workflow_dispatch: # Manual trigger button!
-
+  workflow_dispatch:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
         with:
           node-version: 18
-
-      - name: Restore WhatsApp Session Cache
-        uses: actions/cache@v3
-        id: wa-cache
+      - uses: actions/cache@v3
         with:
           path: |
             .wwebjs_auth
             state.json
-          key: whatsapp-session-${{ github.run_id }}
-          restore-keys: |
-            whatsapp-session-
-
-      - name: Install Missing Dependencies
-        run: sudo apt-get install -y libgbm-dev libasound2 libnss3 libatk-bridge2.0-0 libgtk-3-0
-
-      - name: Install Node Modules
-        run: npm install
-
-      - name: Run Saree Automation Sync
-        run: node scheduled_cloud_bot.js
+          key: wa-session-${{ github.run_id }}
+          restore-keys: wa-session-
+      - run: sudo apt-get update && sudo apt-get install -y libgbm-dev libasound2t64 libnss3 libatk-bridge2.0-0 libgtk-3-0
+      - run: npm install
+      - run: node scheduled_cloud_bot.js
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
