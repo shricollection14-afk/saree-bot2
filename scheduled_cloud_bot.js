@@ -50,26 +50,29 @@ client.on('qr', async (qr) => {
 
 
 let pdfsSent = 0;
-let chatQueues = {};
 
 client.on('ready', async () => {
-    console.log('✅ CONNECTED! Initiating 24-Hour Sync Engine...');
-
-    // Backup Safety Exit
-    setTimeout(() => {
-        console.log("Maximum time reached (10 mins). Forcing exit.");
-        bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Sync Finish. Safely delivered: ${pdfsSent} pdfs.`);
-        process.exit(0);
-    }, 10 * 60 * 1000);
+    console.log('✅ CONNECTED! Ab history lane ki purjor koshish ki ja rahi hai...');
 
     setTimeout(async () => {
         const myId = client.info.wid._serialized;
 
         try {
+            console.log("Chat Object fetch kar rahe hain...");
             const chat = await client.getChatById(myId);
             
-            console.log("Attempting direct historical API fetch for 24 hours...");
-            // Yahan wahi error aa sakta hai jo aapne bataya tha
+            // 🔥 REAL MAGIC TRICK FIX 🔥
+            // Pura crash isliye tha kyunki background Chrome me WhatsApp ka chat window nahi khulta apne aap.
+            // Hum pehle bot se ek "Ping" message send karwayenge, jisse WhatsApp ko jabardasti "Self-Chat" open karna padega server par.
+            console.log("Sending Wake-up ping to avoid Library Error...");
+            
+            let wakeupMsg = await chat.sendMessage("♻️ Saree Bot is actively parsing 24h history...");
+            
+            // Ab UI load hone ke liye 5 second rukenge
+            console.log("Waiting 5 seconds for UI to assemble completely...");
+            await new Promise(resolve => setTimeout(resolve, 5000));
+
+            console.log("Ab final messages fetch kar rahe hain API se...");
             const allMessages = await chat.fetchMessages({ limit: 100 });
             
             let limitTime = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
@@ -77,8 +80,10 @@ client.on('ready', async () => {
                 limitTime = appState.lastProcessedTimestamp;
             }
 
-            const newMessages = allMessages.filter(m => m.timestamp > limitTime);
-            console.log(`🔎 Total ${newMessages.length} PENDING messages found via Direct API!`);
+            // Un messages ko hatana jo bot khud bhejta hai taaki infinite loop na bane
+            const newMessages = allMessages.filter(m => m.timestamp > limitTime && !m.body.includes('Cloud bot') && !m.body.includes('Saree Bot'));
+            
+            console.log(`🔎 Total ${newMessages.length} PENDING messages found in the last 24 hours!`);
 
             let currentBatch = { images: [], textMsg: null };
 
@@ -88,7 +93,8 @@ client.on('ready', async () => {
                 } 
                 else if (msg.body && currentBatch.images.length >= 1) {
                     currentBatch.textMsg = msg;
-                    console.log(`-> Batch pakda! Processing PDF...`);
+                    console.log(`-> Batch pakda, size: ${currentBatch.images.length}! PDF ban raha hai...`);
+                    
                     await createAndSendPDF(currentBatch);
                     pdfsSent++;
                     
@@ -96,51 +102,35 @@ client.on('ready', async () => {
                     saveState();
                     currentBatch = { images: [], textMsg: null }; 
                 }
+                
+                if (msg.timestamp > appState.lastProcessedTimestamp) {
+                     appState.lastProcessedTimestamp = msg.timestamp;
+                     saveState();
+                }
+            }
+
+            if (appState.telegramChatId) {
+                if (pdfsSent > 0) {
+                    bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Sync Finish. Delivered: ${pdfsSent}`);
+                } else {
+                    bot.sendMessage(appState.telegramChatId, `💤 24-Hour Sync Finish. Data processed.`);
+                }
             }
             
-            bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Sync Finish. Pdfs sent: ${pdfsSent}`);
+            // Faltu ka delay hata diya
+            console.log("Job Done perfectly. Exiting.");
             setTimeout(() => { process.exit(0); }, 5000);
 
         } catch (err) { 
-            // AGAR API CRASH HOTI HAI (Error 01) TOH YE FALLBACK APNE AAP SAARA KAAM KAR DEGA BINA ERROR KE
-            console.log("⚠ WARNING: Direct API rejected the request (Library Error). Initiating Natural Automated Pull...");
-            console.log("⏳ Bot will now stay online to naturally sync all 24-hour missed messages automatically.");
-            // Bot doesn't exit. It falls back to `message_create` which downloads everything missed!
+            console.error("FATAL ERROR IN WORKFLOW:", err);
+            if (appState.telegramChatId) {
+                bot.sendMessage(appState.telegramChatId, `❌ Bot Error: Apne aaj shayad Self-chat me kuch nahi bheja ya format galat hai.`);
+            }
+            process.exit(1);
         }
 
-    }, 10000); // 10 sec delay
+    }, 5000); // Sirf 5 second delay start me
 });
-
-
-// 🔥 THE FALLBACK LISTENER 🔥 
-// Agar historical API fail hoti hai toh ye listener WhatsApp background sync se khud 24 ghante ka saara data utha leta hai.
-client.on('message_create', async (msg) => {
-    const myId = client.info.wid._serialized;
-    const isSelfChat = (msg.from === myId && msg.to === myId);
-
-    if (!isSelfChat) return;
-    
-    if (msg.timestamp <= appState.lastProcessedTimestamp) return; 
-
-    if (!chatQueues[myId]) chatQueues[myId] = { images: [], textMsg: null };
-    const q = chatQueues[myId];
-
-    if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
-        q.images.push(msg);
-        console.log(`📸 Image Autopulled! (Queue: ${q.images.length})`);
-    } else if (msg.body && q.images.length >= 1) {
-        q.textMsg = msg;
-        console.log(`💬 Text Autopulled: "${msg.body.substring(0, 15)}". Batch Complete! Sending PDF...`);
-
-        await createAndSendPDF(q);
-        pdfsSent++;
-        
-        appState.lastProcessedTimestamp = msg.timestamp;
-        saveState();
-        delete chatQueues[myId];
-    }
-});
-
 
 async function createAndSendPDF(batch) {
     const title = `Saree_${appState.counter.toString().padStart(2, '0')}`;
