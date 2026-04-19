@@ -3,6 +3,10 @@ on:
   schedule:
     - cron: '30 15 * * *'
   workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -11,20 +15,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      
-      # BEHTAR CACHE: Isse session yaad rahega
-      - name: Restore WhatsApp Session
-        uses: actions/cache@v4
+          
+      - uses: actions/cache@v4
         with:
-          path: .wwebjs_auth
-          key: ${{ runner.os }}-wa-session-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-wa-session-
+          path: |
+            .wwebjs_auth
+            state.json
+          key: wa-session-${{ github.run_id }}
+          restore-keys: wa-session-
 
-      - name: Install Chrome
+      - name: Install Chrome Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
+          sudo apt-get install -y wget gnupg
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable --no-install-recommends
 
       - run: npm install
       - run: node scheduled_cloud_bot.js
