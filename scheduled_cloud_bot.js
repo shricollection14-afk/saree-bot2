@@ -1,4 +1,5 @@
 require('dotenv').config();
+const Message = require('whatsapp-web.js/src/structures/Message');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
@@ -133,9 +134,18 @@ client.on('ready', async () => {
 });
 
 async function processTargetChat(targetChat) {
-    console.log("Fetching past 100 messages...");
-    const allMessages = await targetChat.fetchMessages({ limit: 100 });
-    console.log(`✅ Loaded ${allMessages.length} messages from history.`);
+    console.log("Fetching past messages natively to bypass Library UI Bug...");
+    // 🚀 OMITTED BUGGY API: const allMessages = await targetChat.fetchMessages({ limit: 100 });
+    
+    const rawMessages = await client.pupPage.evaluate(async (chatId) => {
+        const msgModels = window.Store.Msg.getModelsArray().filter(m => m.id.remote === chatId);
+        return msgModels.map(m => window.WWebJS.getMessageModel(m));
+    }, targetChat.id._serialized);
+    
+    // Re-pack WhatsApp internal DB objects back smoothly as Native Node structures
+    const allMessages = rawMessages.map(data => new Message(client, data));
+    
+    console.log(`✅ Loaded ${allMessages.length} messages from raw history.`);
 
     const currentTimeMs = Date.now();
     
