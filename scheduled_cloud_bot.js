@@ -16,6 +16,9 @@ const TEMP_DIR = path.join(__dirname, 'temp');
 fs.ensureDirSync(TEMP_DIR);
 
 const client = new Client({
+    client.on('loading_screen', (percent, message) => {
+    console.log('Loading:', percent, message);
+});
     authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
     puppeteer: {
         headless: true,
