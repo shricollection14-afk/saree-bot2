@@ -1,0 +1,24 @@
+{
+  "name": "zip-maker-antigravity-system-shri-collection-message-to-file",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "fs-extra": "^11.3.4",
+    "mongoose": "^9.4.1",
+    "node-telegram-bot-api": "^0.67.0",
+    "pdfkit": "^0.18.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.34.6",
+    "wwebjs-mongo": "^1.1.0"
+  }
+}
