@@ -42,35 +42,39 @@ client.on('qr', async (qr) => {
 });
 
 client.on('ready', async () => {
-    console.log('✅ CONNECTED! Scanning TODAY\'S messages only...');
+    console.log('✅ CONNECTED! Searching Self-Chat for Saree batches...');
     const myId = client.info.wid._serialized;
 
     try {
         const chat = await client.getChatById(myId);
-        const messages = await chat.fetchMessages({ limit: 100 });
+        const allMessages = await chat.fetchMessages({ limit: 100 });
         
-        // Aaj ki date ke liye start time (Subah 12 AM)
-        const startOfToday = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
+        // Time Filter: Pichle 24 ghante (Last 24 Hours)
+        const twentyFourHoursAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
         
-        // Sirf Aaj ke messages ko filter karein
-        const todaysMessages = messages.filter(m => m.timestamp >= startOfToday);
-        console.log(`Found ${todaysMessages.length} messages from Today.`);
+        const recentMessages = allMessages.filter(m => m.timestamp >= twentyFourHoursAgo);
+        console.log(`Searching through ${recentMessages.length} recent messages...`);
 
         let currentBatch = { images: [], textMsg: null };
 
-        for (const msg of todaysMessages) {
+        for (const msg of recentMessages) {
+            // Media detection
             if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
                 currentBatch.images.push(msg);
-            } else if (msg.body && currentBatch.images.length >= 1) {
+                console.log(`   -> Found Image! (Queue: ${currentBatch.images.length})`);
+            } 
+            // Text detection (Batch end)
+            else if (msg.body && currentBatch.images.length >= 1) {
                 currentBatch.textMsg = msg;
+                console.log(`   -> Found Text: "${msg.body.substring(0,20)}...". Sending PDF!`);
                 await createAndSendPDF(currentBatch);
-                currentBatch = { images: [], textMsg: null };
+                currentBatch = { images: [], textMsg: null }; // Reset
             }
         }
-    } catch (err) { console.error(err); }
+    } catch (err) { console.error("Critical Error:", err); }
 
-    if (appState.telegramChatId) bot.sendMessage(appState.telegramChatId, "✅ Today's sync complete!");
-    setTimeout(() => { process.exit(0); }, 20000);
+    if (appState.telegramChatId) bot.sendMessage(appState.telegramChatId, "✅ Sync Job Finished.");
+    setTimeout(() => { process.exit(0); }, 30000);
 });
 
 async function createAndSendPDF(batch) {
@@ -79,7 +83,7 @@ async function createAndSendPDF(batch) {
     fs.writeFileSync(STATE_FILE, JSON.stringify(appState));
     
     const pdfPath = path.join(TEMP_DIR, `${title}.pdf`);
-    console.log(`Creating: ${title}`);
+    console.log(`Creating: ${pdfPath}`);
 
     try {
         const doc = new PDFDocument();
@@ -100,11 +104,10 @@ async function createAndSendPDF(batch) {
         doc.end();
 
         await new Promise(resolve => stream.on('finish', resolve));
-        await bot.sendDocument(appState.telegramChatId, pdfPath);
+        await bot.sendDocument(appState.telegramChatId, pdfPath, { caption: `✅ ${title} Ready!` });
         fs.unlinkSync(pdfPath);
-        console.log(`Sent: ${title}`);
-    } catch (e) { console.error(e); }
+        console.log(`Sent: ${title} Successfully!`);
+    } catch (e) { console.error("PDF Creation Failed:", e); }
 }
 
-console.log("Starting WhatsApp...");
 client.initialize();
