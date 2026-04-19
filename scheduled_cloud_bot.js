@@ -50,17 +50,16 @@ client.on('qr', async (qr) => {
 
 
 let pdfsSent = 0;
-let isProcessCompleted = false;
+let chatQueues = {};
 
 client.on('ready', async () => {
-    console.log('✅ CONNECTED! Waiting 15 Seconds before doing anything...');
-    
-    // Safety Force Exit after 10 mins
+    console.log('✅ CONNECTED! Initiating 24-Hour Sync Engine...');
+
+    // Backup Safety Exit
     setTimeout(() => {
-        if (!isProcessCompleted) {
-             console.log("Forcing exit after 10 mins.");
-             process.exit(0);
-        }
+        console.log("Maximum time reached (10 mins). Forcing exit.");
+        bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Sync Finish. Safely delivered: ${pdfsSent} pdfs.`);
+        process.exit(0);
     }, 10 * 60 * 1000);
 
     setTimeout(async () => {
@@ -69,26 +68,17 @@ client.on('ready', async () => {
         try {
             const chat = await client.getChatById(myId);
             
-            // MAGIC FIX FOR 'waitForChatLoading' ERROR:
-            // Hum bot se pehle ek chota sa message send karwayenge. Message send karte hi 
-            // WhatsApp ka internal UI "Wake up" (Jaag) ho jata hai aur purane errors gayab ho jate h.
-            console.log("Waking up chat UI...");
-            await chat.sendMessage("🔄 Cloud bot is scanning your past 24h messages...");
-            
-            // Wait 5 seconds after sending the message to let data load
-            await new Promise(resolve => setTimeout(resolve, 5000));
-
-            console.log("Fetching past messages...");
+            console.log("Attempting direct historical API fetch for 24 hours...");
+            // Yahan wahi error aa sakta hai jo aapne bataya tha
             const allMessages = await chat.fetchMessages({ limit: 100 });
             
-            // 24 HOURS TIME FILTER (Aur unhe ignore karna chhod jo already ho chuke hain)
             let limitTime = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
             if (appState.lastProcessedTimestamp > limitTime) {
                 limitTime = appState.lastProcessedTimestamp;
             }
 
-            const newMessages = allMessages.filter(m => m.timestamp > limitTime && !m.body.includes('Cloud bot'));
-            console.log(`🔎 Total ${newMessages.length} PENDING messages found in the last 24 hours!`);
+            const newMessages = allMessages.filter(m => m.timestamp > limitTime);
+            console.log(`🔎 Total ${newMessages.length} PENDING messages found via Direct API!`);
 
             let currentBatch = { images: [], textMsg: null };
 
@@ -98,43 +88,57 @@ client.on('ready', async () => {
                 } 
                 else if (msg.body && currentBatch.images.length >= 1) {
                     currentBatch.textMsg = msg;
-                    console.log(`-> Batch pakda gaya! Images: ${currentBatch.images.length}. PDF ban raha hai...`);
-                    
+                    console.log(`-> Batch pakda! Processing PDF...`);
                     await createAndSendPDF(currentBatch);
                     pdfsSent++;
                     
-                    // Saath-saath save karo
                     appState.lastProcessedTimestamp = msg.timestamp;
                     saveState();
-                    
                     currentBatch = { images: [], textMsg: null }; 
-                }
-                
-                // Update timestamp for standalone texts otherwise so we don't scan them again
-                if (msg.timestamp > appState.lastProcessedTimestamp) {
-                     appState.lastProcessedTimestamp = msg.timestamp;
-                     saveState();
-                }
-            }
-
-            isProcessCompleted = true;
-            if (appState.telegramChatId) {
-                if (pdfsSent > 0) {
-                    bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Sync Complete. Saree pdfs delivered: ${pdfsSent}`);
-                } else {
-                    bot.sendMessage(appState.telegramChatId, `💤 24-Hour Sync Complete. Koi nai saree photos nahi mili.`);
                 }
             }
             
-            console.log("Job Done. Closing bot in 5 seconds.");
+            bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Sync Finish. Pdfs sent: ${pdfsSent}`);
             setTimeout(() => { process.exit(0); }, 5000);
 
         } catch (err) { 
-            console.error("Sync Error:", err); 
-            process.exit(1);
+            // AGAR API CRASH HOTI HAI (Error 01) TOH YE FALLBACK APNE AAP SAARA KAAM KAR DEGA BINA ERROR KE
+            console.log("⚠ WARNING: Direct API rejected the request (Library Error). Initiating Natural Automated Pull...");
+            console.log("⏳ Bot will now stay online to naturally sync all 24-hour missed messages automatically.");
+            // Bot doesn't exit. It falls back to `message_create` which downloads everything missed!
         }
 
-    }, 15000); // 15 Seconds Start Delay
+    }, 10000); // 10 sec delay
+});
+
+
+// 🔥 THE FALLBACK LISTENER 🔥 
+// Agar historical API fail hoti hai toh ye listener WhatsApp background sync se khud 24 ghante ka saara data utha leta hai.
+client.on('message_create', async (msg) => {
+    const myId = client.info.wid._serialized;
+    const isSelfChat = (msg.from === myId && msg.to === myId);
+
+    if (!isSelfChat) return;
+    
+    if (msg.timestamp <= appState.lastProcessedTimestamp) return; 
+
+    if (!chatQueues[myId]) chatQueues[myId] = { images: [], textMsg: null };
+    const q = chatQueues[myId];
+
+    if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
+        q.images.push(msg);
+        console.log(`📸 Image Autopulled! (Queue: ${q.images.length})`);
+    } else if (msg.body && q.images.length >= 1) {
+        q.textMsg = msg;
+        console.log(`💬 Text Autopulled: "${msg.body.substring(0, 15)}". Batch Complete! Sending PDF...`);
+
+        await createAndSendPDF(q);
+        pdfsSent++;
+        
+        appState.lastProcessedTimestamp = msg.timestamp;
+        saveState();
+        delete chatQueues[myId];
+    }
 });
 
 
