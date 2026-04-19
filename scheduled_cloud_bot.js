@@ -143,10 +143,10 @@ async function processTargetChat(targetChat) {
         }
     });
 
-    console.log("Fetching past 30 messages deeply from Whatsapp internal Database...");
+    console.log("Fetching past 15 messages directly from Whatsapp internal Database...");
     let allMessages = [];
     try {
-        allMessages = await targetChat.fetchMessages({ limit: 30 });
+        allMessages = await targetChat.fetchMessages({ limit: 15 });
     } catch (e) {
         console.error("Fetch limit error, falling back locally:", e.message);
     }
@@ -155,32 +155,17 @@ async function processTargetChat(targetChat) {
 
     const currentTimeMs = Date.now();
 
-    let limitTimeMs = currentTimeMs - (24 * 60 * 60 * 1000);
-    if (appState.lastProcessedTimestamp > 0) {
-        let lastPTimeMs = appState.lastProcessedTimestamp.toString().length > 10 ? appState.lastProcessedTimestamp : appState.lastProcessedTimestamp * 1000;
-        if (lastPTimeMs > limitTimeMs) {
-            limitTimeMs = lastPTimeMs;
-        }
-    }
-
-    console.log(`Filtering messages strictly after: ${new Date(limitTimeMs).toLocaleString()}`);
-
+    // Bypass 24-hours and timestamp limits, directly processing the fetched 15 messages
     let newMessages = [];
     for (const msg of allMessages) {
         const msgTimeMs = (msg.timestamp && msg.timestamp.toString().length > 10)
             ? msg.timestamp
             : msg.timestamp * 1000;
-
-        const diffHours = ((currentTimeMs - msgTimeMs) / (1000 * 60 * 60)).toFixed(2);
-
-        if (msgTimeMs > limitTimeMs) {
-            newMessages.push({ original: msg, timeMs: msgTimeMs });
-            // Advanced Debug format jisse filter failures pata chal jaayein user request no. 4 ke hisaab se:
-            console.log(`[DEBUG - OK ] Time: ${new Date(msgTimeMs).toLocaleString()} | Diff: ${diffHours} hr | Media: ${msg.hasMedia} | Type: ${msg.type}`);
-        }
+            
+        newMessages.push({ original: msg, timeMs: msgTimeMs });
     }
 
-    console.log(`🔎 Correctly verified ${newMessages.length} fresh messages within the 24h cycle!`);
+    console.log(`🔎 Ignored 24h rules. Directly processing the last ${newMessages.length} messages!`);
 
     let currentBatch = { images: [], textMsg: null };
 
