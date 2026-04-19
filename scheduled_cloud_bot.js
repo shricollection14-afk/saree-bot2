@@ -9,7 +9,7 @@ const PDFDocument = require('pdfkit');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ENV_CHAT_ID = process.env.TELEGRAM_CHAT_ID ? Number(process.env.TELEGRAM_CHAT_ID) : null;
-const TARGET_CHAT_NAME = '916376620435'; // Target Chat Id / Number
+const TARGET_CHAT_NAME = '+91 63766 20435'; // Fixed as per your WhatsApp exact displayed name pattern
 
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -67,123 +67,152 @@ client.on('ready', async () => {
 
     setTimeout(async () => {
         try {
-            console.log(`🔎 Looking for target chat by exact Name/ID: "${TARGET_CHAT_NAME}"`);
+            console.log(`🔎 Seeking target chat Name/ID: "${TARGET_CHAT_NAME}"`);
             
             const chats = await client.getChats();
-            const targetChat = chats.find(c => c.name === TARGET_CHAT_NAME || c.id.user === TARGET_CHAT_NAME || c.id._serialized === `${TARGET_CHAT_NAME}@c.us` || c.id._serialized === client.info.wid._serialized);
+            const rawSearchNumber = TARGET_CHAT_NAME.replace(/\D/g, ''); // Sab kuch hta kar sirf digits
             
+            let targetChat = chats.find(c => {
+                // Exact Name check
+                if (c.name === TARGET_CHAT_NAME) return true;
+                
+                // Advanced Internal ID Check
+                const cNameRaw = (c.name || '').replace(/\D/g, '');
+                const cIdRaw = c.id ? c.id.user : '';
+                
+                // Agar target no. exactly match ho gaya
+                if (rawSearchNumber && rawSearchNumber.length > 8) {
+                    if (cNameRaw === rawSearchNumber || cIdRaw === rawSearchNumber) return true;
+                }
+                return false;
+            });
+            
+            // Failsafe Algorithm: Agar recent list me hi chat object exist na kare toh directly server ID bypass karenge
             if (!targetChat) {
-                console.error(`❌ ERROR: Could not find chat with Name/ID "${TARGET_CHAT_NAME}". Available chats:`);
-                chats.slice(0, 10).forEach(c => console.log(` - ${c.name || c.id._serialized}`));
-                throw new Error(`Chat "${TARGET_CHAT_NAME}" not found`);
-            }
-            
-            console.log(`✅ Targeted Chat Found: ${targetChat.name} (ID: ${targetChat.id._serialized})`);
-
-            console.log("Fetching past 100 messages...");
-            const allMessages = await targetChat.fetchMessages({ limit: 100 });
-            console.log(`✅ Loaded ${allMessages.length} messages from history.`);
-
-            const currentTimeMs = Date.now();
-            console.log(`Current Time: ${new Date(currentTimeMs).toLocaleString()}`);
-            
-            // Limit to last 24 hours (or last processed timestamp, whichever is more recent)
-            let limitTimeMs = currentTimeMs - (24 * 60 * 60 * 1000);
-            if (appState.lastProcessedTimestamp > 0) {
-                 // Check if lastProcessed is in seconds or ms, normalize to ms
-                 let lastPTimeMs = appState.lastProcessedTimestamp.toString().length > 10 ? appState.lastProcessedTimestamp : appState.lastProcessedTimestamp * 1000;
-                 if (lastPTimeMs > limitTimeMs) {
-                      limitTimeMs = lastPTimeMs;
-                 }
-            }
-
-            console.log(`Filtering messages strictly after: ${new Date(limitTimeMs).toLocaleString()}`);
-
-            let newMessages = [];
-            for (const msg of allMessages) {
-                // Normalize timestamp: if 10 digits -> seconds, convert to ms by * 1000
-                const msgTimeMs = (msg.timestamp && msg.timestamp.toString().length > 10) 
-                                   ? msg.timestamp 
-                                   : msg.timestamp * 1000;
-                
-                const diffHours = ((currentTimeMs - msgTimeMs) / (1000 * 60 * 60)).toFixed(2);
-                
-                console.log(`[DEBUG] Msg Timestamp: ${new Date(msgTimeMs).toLocaleString()} | Diff: ${diffHours} hrs ago | HasMedia: ${msg.hasMedia} | Body: ${msg.body ? msg.body.substring(0, 15) : 'N/A'}`);
-                
-                if (msgTimeMs > limitTimeMs) {
-                    newMessages.push({ original: msg, timeMs: msgTimeMs });
+                console.log(`⚠️ List me chat nahi mila. Direct ID inject karke fetch kar rahe hain...`);
+                let directChatId = `${TARGET_CHAT_NAME}@c.us`;
+                if (rawSearchNumber) {
+                     directChatId = `${rawSearchNumber}@c.us`;
                 }
-            }
-
-            console.log(`🔎 Correctly verified ${newMessages.length} messages within the valid 24h timeframe!`);
-
-            let currentBatch = { images: [], textMsg: null };
-
-            for (const msgData of newMessages) {
-                const msg = msgData.original;
                 
-                if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
-                    currentBatch.images.push(msg);
-                    console.log(` -> Image Queued (Current count: ${currentBatch.images.length})`);
-                } 
-                else if (msg.body && currentBatch.images.length >= 1) {
-                    currentBatch.textMsg = msg;
-                    console.log(` -> Text paired with ${currentBatch.images.length} images! Processing Saree Batch task...`);
-                    
-                    // PDF Batch Creation
-                    await createAndSendPDF(currentBatch);
-                    
-                    // Fallback Direct Messages
-                    for (const imgMsg of currentBatch.images) {
-                        try {
-                            const media = await imgMsg.downloadMedia();
-                            if (media && appState.telegramChatId) {
-                                const imgLocalPath = path.join(TEMP_DIR, `native_${Date.now()}.jpg`);
-                                fs.writeFileSync(imgLocalPath, Buffer.from(media.data, 'base64'));
-                                await bot.sendPhoto(appState.telegramChatId, imgLocalPath);
-                                fs.unlinkSync(imgLocalPath);
-                            }
-                        } catch (err) { console.error("Error sending native photo:", err.message) }
+                try {
+                    const directChat = await client.getChatById(directChatId);
+                    if (directChat) {
+                        targetChat = directChat;
                     }
-                    if (appState.telegramChatId) {
-                         await bot.sendMessage(appState.telegramChatId, `Description: ${msg.body}`);
-                    }
-                    
-                    pdfsSent++;
-                    
-                    appState.lastProcessedTimestamp = msgData.timeMs;
-                    saveState();
-                    currentBatch = { images: [], textMsg: null }; 
-                }
-                
-                if (msgData.timeMs > appState.lastProcessedTimestamp) {
-                     appState.lastProcessedTimestamp = msgData.timeMs;
-                     saveState();
-                }
-            }
-
-            isProcessCompleted = true;
-            if (appState.telegramChatId) {
-                if (pdfsSent > 0) {
-                    bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Bot Workflow Sync Complete. Delivery: ${pdfsSent} batches`);
-                } else {
-                    bot.sendMessage(appState.telegramChatId, `💤 24-Hour Sync Finished. Checked exact timeframes. Data processed without new files.`);
+                } catch (e) {
+                    throw new Error(`Chat completely not found by Name or Direct ID mapping.`);
                 }
             }
             
-            console.log("Job Done perfectly. Exiting.");
-            setTimeout(() => { process.exit(0); }, 5000);
+            console.log(`✅ Targeted Chat SUCCESSFULLY Found: ${targetChat.name || targetChat.id.user} (ID: ${targetChat.id._serialized})`);
+            await processTargetChat(targetChat);
 
         } catch (err) { 
             console.error("FATAL ERROR IN WORKFLOW:", err);
-            if (appState.telegramChatId) {
-                bot.sendMessage(appState.telegramChatId, `❌ Bot Error Details: ${err.message}`);
-            }
+            if (appState.telegramChatId) bot.sendMessage(appState.telegramChatId, `❌ Bot Error Details: ${err.message}`);
             process.exit(1);
         }
 
-    }, 10000); // 10 sec delay
+    }, 10000); // 10 sec start delay
 });
+
+async function processTargetChat(targetChat) {
+    console.log("Fetching past 100 messages...");
+    const allMessages = await targetChat.fetchMessages({ limit: 100 });
+    console.log(`✅ Loaded ${allMessages.length} messages from history.`);
+
+    const currentTimeMs = Date.now();
+    
+    let limitTimeMs = currentTimeMs - (24 * 60 * 60 * 1000);
+    if (appState.lastProcessedTimestamp > 0) {
+         let lastPTimeMs = appState.lastProcessedTimestamp.toString().length > 10 ? appState.lastProcessedTimestamp : appState.lastProcessedTimestamp * 1000;
+         if (lastPTimeMs > limitTimeMs) {
+              limitTimeMs = lastPTimeMs;
+         }
+    }
+
+    console.log(`Filtering messages strictly after: ${new Date(limitTimeMs).toLocaleString()}`);
+
+    let newMessages = [];
+    for (const msg of allMessages) {
+        const msgTimeMs = (msg.timestamp && msg.timestamp.toString().length > 10) 
+                           ? msg.timestamp 
+                           : msg.timestamp * 1000;
+        
+        const diffHours = ((currentTimeMs - msgTimeMs) / (1000 * 60 * 60)).toFixed(2);
+        
+        if (msgTimeMs > limitTimeMs) {
+            newMessages.push({ original: msg, timeMs: msgTimeMs });
+            // Advanced Debug format jisse filter failures pata chal jaayein user request no. 4 ke hisaab se:
+            console.log(`[DEBUG - OK ] Time: ${new Date(msgTimeMs).toLocaleString()} | Diff: ${diffHours} hr | Media: ${msg.hasMedia} | Type: ${msg.type}`);
+        }
+    }
+
+    console.log(`🔎 Correctly verified ${newMessages.length} fresh messages within the 24h cycle!`);
+
+    let currentBatch = { images: [], textMsg: null };
+
+    // Sort to ensure chronologic order perfectly maintaining sequence
+    newMessages.sort((a,b) => a.timeMs - b.timeMs);
+
+    for (const msgData of newMessages) {
+        const msg = msgData.original;
+        
+        if (msg.hasMedia && (msg.type === 'image' || msg.type === 'document')) {
+            currentBatch.images.push(msg);
+            console.log(` -> Image Queued (Current Queue count: ${currentBatch.images.length})`);
+        } 
+        // Changed to msg.type==='chat' so it does not falsely match system announcements/links as text
+        else if (msg.type === 'chat' && msg.body && currentBatch.images.length >= 1) {
+            currentBatch.textMsg = msg;
+            console.log(` -> Text paired with ${currentBatch.images.length} images! Processing Native PDF + Images Delivery Task...`);
+            
+            // #1 Create native legacy PDF format
+            await createAndSendPDF(currentBatch);
+            
+            // #2 Direct Telegram Action Fallback
+            for (const imgMsg of currentBatch.images) {
+                try {
+                    const media = await imgMsg.downloadMedia();
+                    if (media && appState.telegramChatId) {
+                        const imgLocalPath = path.join(TEMP_DIR, `native_${Date.now()}_${Math.random()}.jpg`);
+                        fs.writeFileSync(imgLocalPath, Buffer.from(media.data, 'base64'));
+                        await bot.sendPhoto(appState.telegramChatId, imgLocalPath);
+                        fs.unlinkSync(imgLocalPath);
+                    }
+                } catch (err) { console.error("Error sending native photo:", err.message) }
+            }
+            if (appState.telegramChatId) {
+                 await bot.sendMessage(appState.telegramChatId, `📝 Full Description:\n\n${msg.body}`);
+            }
+            
+            pdfsSent++;
+            appState.lastProcessedTimestamp = msgData.timeMs;
+            saveState();
+            
+            currentBatch = { images: [], textMsg: null }; 
+        }
+        
+        // Prevent looping through same stray photos across runs
+        if (msgData.timeMs > appState.lastProcessedTimestamp) {
+             appState.lastProcessedTimestamp = msgData.timeMs;
+             saveState();
+        }
+    }
+
+    isProcessCompleted = true;
+    if (appState.telegramChatId) {
+        if (pdfsSent > 0) {
+            bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Workflow Sync Complete. Final Batch Validations: ${pdfsSent}`);
+        } else {
+            bot.sendMessage(appState.telegramChatId, `💤 24-Hour Sync Checked. Found no fresh media-to-text image patterns.`);
+        }
+    }
+    
+    console.log("Job Done perfectly. Exiting process.");
+    setTimeout(() => { process.exit(0); }, 5000);
+}
 
 async function createAndSendPDF(batch) {
     const title = `Saree_${appState.counter.toString().padStart(2, '0')}`;
@@ -215,9 +244,9 @@ async function createAndSendPDF(batch) {
         doc.end();
 
         await new Promise(resolve => stream.on('finish', resolve));
-        await bot.sendDocument(appState.telegramChatId, pdfPath, { caption: `✅ ${title} PDF Ready!` });
+        await bot.sendDocument(appState.telegramChatId, pdfPath, { caption: `✅ ${title} PDF Compilation Ready!` });
         fs.unlinkSync(pdfPath);
-        console.log(`!! SUCCESS !! ${title} Sent to Telegram.`);
+        console.log(`!! SUCCESS !! ${title} Sent.`);
     } catch (e) { }
 }
 
