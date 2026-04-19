@@ -6,6 +6,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs-extra');
 const path = require('path');
 const PDFDocument = require('pdfkit');
+const Message = require('whatsapp-web.js/src/structures/Message');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ENV_CHAT_ID = process.env.TELEGRAM_CHAT_ID ? Number(process.env.TELEGRAM_CHAT_ID) : null;
@@ -48,42 +49,37 @@ client.on('qr', async (qr) => {
     }
 });
 
-
 let pdfsSent = 0;
 
 client.on('ready', async () => {
-    console.log('✅ CONNECTED! Ab history lane ki purjor koshish ki ja rahi hai...');
+    console.log('✅ CONNECTED! Direct DOM Bypass Method Activated...');
 
     setTimeout(async () => {
         const myId = client.info.wid._serialized;
 
         try {
-            console.log("Chat Object fetch kar rahe hain...");
-            const chat = await client.getChatById(myId);
+            console.log("Fetching past messages bypassing default waitForChatLoading Library routines...");
             
-            // 🔥 REAL MAGIC TRICK FIX 🔥
-            // Pura crash isliye tha kyunki background Chrome me WhatsApp ka chat window nahi khulta apne aap.
-            // Hum pehle bot se ek "Ping" message send karwayenge, jisse WhatsApp ko jabardasti "Self-Chat" open karna padega server par.
-            console.log("Sending Wake-up ping to avoid Library Error...");
+            // 🚀 THE ULTIMATE BYPASS 🚀
+            // Hum yahan kisi bhi 'fetchMessages()' ka istaamal nahi karenge jisse error 01 bilkul generate nahi ho payega.
+            // Hum seedha WhatsApp web ke underlying 'Store.Msg' se us din ka data khinch rahe hain raw variables me.
+            const rawMessages = await client.pupPage.evaluate(async (chatId) => {
+                // Fetch direct internal WhatsApp DB entries
+                const msgModels = window.Store.Msg.getModelsArray().filter(m => m.id.remote === chatId);
+                // Convert to NodeJS readable formats using safe wrappers
+                return msgModels.map(m => window.WWebJS.getMessageModel(m));
+            }, myId);
             
-            let wakeupMsg = await chat.sendMessage("♻️ Saree Bot is actively parsing 24h history...");
-            
-            // Ab UI load hone ke liye 5 second rukenge
-            console.log("Waiting 5 seconds for UI to assemble completely...");
-            await new Promise(resolve => setTimeout(resolve, 5000));
-
-            console.log("Ab final messages fetch kar rahe hain API se...");
-            const allMessages = await chat.fetchMessages({ limit: 100 });
+            // Re-assembling them properly into library-usable Message Objects outside of UI thread logic
+            const allMessages = rawMessages.map(data => new Message(client, data));
             
             let limitTime = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
             if (appState.lastProcessedTimestamp > limitTime) {
                 limitTime = appState.lastProcessedTimestamp;
             }
 
-            // Un messages ko hatana jo bot khud bhejta hai taaki infinite loop na bane
-            const newMessages = allMessages.filter(m => m.timestamp > limitTime && !m.body.includes('Cloud bot') && !m.body.includes('Saree Bot'));
-            
-            console.log(`🔎 Total ${newMessages.length} PENDING messages found in the last 24 hours!`);
+            const newMessages = allMessages.filter(m => m.timestamp > limitTime && !m.body.includes('Saree Bot'));
+            console.log(`🔎 Total ${newMessages.length} PENDING messages successfully extracted!`);
 
             let currentBatch = { images: [], textMsg: null };
 
@@ -93,7 +89,7 @@ client.on('ready', async () => {
                 } 
                 else if (msg.body && currentBatch.images.length >= 1) {
                     currentBatch.textMsg = msg;
-                    console.log(`-> Batch pakda, size: ${currentBatch.images.length}! PDF ban raha hai...`);
+                    console.log(`-> Batch ready, size: ${currentBatch.images.length}! Generating PDF...`);
                     
                     await createAndSendPDF(currentBatch);
                     pdfsSent++;
@@ -103,6 +99,7 @@ client.on('ready', async () => {
                     currentBatch = { images: [], textMsg: null }; 
                 }
                 
+                // Track non-batch timestamps regardless to avoid re-parsing empty segments
                 if (msg.timestamp > appState.lastProcessedTimestamp) {
                      appState.lastProcessedTimestamp = msg.timestamp;
                      saveState();
@@ -113,23 +110,22 @@ client.on('ready', async () => {
                 if (pdfsSent > 0) {
                     bot.sendMessage(appState.telegramChatId, `✅ 24-Hour Sync Finish. Delivered: ${pdfsSent}`);
                 } else {
-                    bot.sendMessage(appState.telegramChatId, `💤 24-Hour Sync Finish. Data processed.`);
+                    bot.sendMessage(appState.telegramChatId, `💤 24-Hour Sync Finish. Data processed without new files.`);
                 }
             }
             
-            // Faltu ka delay hata diya
-            console.log("Job Done perfectly. Exiting.");
-            setTimeout(() => { process.exit(0); }, 5000);
+            console.log("Job Done perfectly bypassing all library errors. Exiting.");
+            setTimeout(() => { process.exit(0); }, 3000);
 
         } catch (err) { 
             console.error("FATAL ERROR IN WORKFLOW:", err);
             if (appState.telegramChatId) {
-                bot.sendMessage(appState.telegramChatId, `❌ Bot Error: Apne aaj shayad Self-chat me kuch nahi bheja ya format galat hai.`);
+                bot.sendMessage(appState.telegramChatId, `❌ Bot Error Details: ${err.message}`);
             }
             process.exit(1);
         }
 
-    }, 5000); // Sirf 5 second delay start me
+    }, 10000); // Wait 10 seconds for DOM assembly before firing bypass
 });
 
 async function createAndSendPDF(batch) {
@@ -155,7 +151,9 @@ async function createAndSendPDF(batch) {
                     doc.addPage().image(imgLocalPath, { fit: [500, 700], align: 'center' });
                     fs.unlinkSync(imgLocalPath);
                 }
-            } catch (err) { }
+            } catch (err) { 
+                console.error("⚠ Single photo skip due to direct DOM disconnect:", err.message); 
+            }
         }
         
         doc.addPage().fontSize(15).text("Description: " + batch.textMsg.body);
